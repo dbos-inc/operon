@@ -3,7 +3,7 @@ import { generateDBOSTestConfig, setUpDBOSTestDb, TestKvTable } from "./helpers"
 import { v1 as uuidv1 } from "uuid";
 import { StatusString } from "../src/workflow";
 import { DBOSConfig } from "../src/dbos-executor";
-import { PoolClient } from "pg";
+import { Client, PoolClient } from "pg";
 import { TestingRuntime, TestingRuntimeImpl, createInternalTestRuntime } from "../src/testing/testing_runtime";
 import { transaction_outputs } from "../schemas/user_db_schema";
 
@@ -222,6 +222,57 @@ describe("dbos-tests", () => {
       status: StatusString.SUCCESS,
     });
   });
+
+  class RaiseExceptionTest {
+    @Transaction()
+    static async signup(ctx: TransactionContext<PoolClient>, input: string): Promise<{ ok: boolean }> {
+      await ctx.client.query(`select test_proc($1)`, [input]) as unknown
+      return { ok: true }
+    }
+  }
+
+  test("user-proc-raise-exception", async () => {
+    {
+      const createTestProc = `
+      CREATE OR REPLACE FUNCTION test_proc(password text)
+      RETURNS int AS $$
+      BEGIN
+        if length(password) < 8 then
+          raise 'password_too_short' using
+            errcode = 'RX400',
+            hint = 'Password must be >= 8 characters long';
+        end if;
+          
+          return 0;
+      END;
+      $$ LANGUAGE plpgsql;
+      `;
+      const pgClient = new Client(config.poolConfig);
+      try {
+        await pgClient.connect();
+        await pgClient.query(createTestProc);
+      } finally {
+        await pgClient.end();
+      }
+    }
+
+    const workflowUUID = uuidv1();
+    await expect(testRuntime.invoke(RaiseExceptionTest, workflowUUID).signup("1234567")).rejects.toThrow("password_too_short");
+
+    {
+      const pgClient = new Client(config.poolConfig);
+      try {
+        await pgClient.connect();
+        const result = await pgClient.query<transaction_outputs>(`SELECT * FROM dbos.transaction_outputs WHERE workflow_uuid = $1`, [workflowUUID]);
+        expect(result.rows.length).toBe(1);
+        expect(result.rows[0].output).toBeNull();
+        expect(result.rows[0].error).not.toBeNull();
+      } finally {
+        await pgClient.end();
+      }
+    }
+  });
+
 });
 
 class DBOSTestClass {
