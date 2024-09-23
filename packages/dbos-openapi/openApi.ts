@@ -25,6 +25,8 @@ import {
   SubTypeFormatter,
   Definition,
   Config,
+  CompletedConfig,
+  DEFAULT_CONFIG,
 } from 'ts-json-schema-generator';
 
 import { OpenAPIV3 as OpenApi3 } from 'openapi-types';
@@ -95,9 +97,10 @@ export class OpenApiGenerator {
 
   constructor(readonly program: ts.Program) {
     this.#checker = program.getTypeChecker();
-    const config: Config = {
+    const config: CompletedConfig = {
+      ...DEFAULT_CONFIG,
       discriminatorType: 'open-api',
-      encodeRefs: false
+      encodeRefs: false,
     };
     const parser = createParser(program, config, aug => aug.addNodeParser(new BigIntKeywordParser()));
     const formatter = createFormatter(config, (fmt) => fmt.addTypeFormatter(new BigIntTypeFormatter()));
