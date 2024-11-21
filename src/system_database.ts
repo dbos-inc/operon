@@ -1046,6 +1046,7 @@ export class PostgresSystemDatabase implements SystemDatabase {
             .where('workflow_uuid', id)
             .update('started_at_epoch_ms', startTimeMs);
         }
+
         // If we did not update this record, probably someone else did.  Count in either case.
         ++numRecentQueries;
       }  
