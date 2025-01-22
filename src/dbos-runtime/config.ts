@@ -261,7 +261,7 @@ export function parseConfigFile(cliOptions?: ParseOptions, useProxy: boolean = f
   /* Build final runtime Configuration */
   /*************************************/
   const entrypoints = new Set<string>();
-  if (configFile.runtimeConfig?.entrypoints) {
+  if (configFile.runtimeConfig?.entrypoints !== undefined) {
     configFile.runtimeConfig.entrypoints.forEach((entry) => entrypoints.add(entry));
   } else {
     entrypoints.add(defaultEntryPoint);
