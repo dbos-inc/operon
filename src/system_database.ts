@@ -929,67 +929,71 @@ export class PostgresSystemDatabase implements SystemDatabase {
       key: state.key,
       value: res.rows[0].value,
       updateTime: res.rows[0].update_time,
-      updateSeq: (res.rows[0].update_seq !== undefined && res.rows[0].update_seq !== null ? BigInt(res.rows[0].update_seq) : undefined),
+      updateSeq: res.rows[0].update_seq !== undefined && res.rows[0].update_seq !== null ? BigInt(res.rows[0].update_seq) : undefined,
     };
   }
 
   async getWorkflows(input: GetWorkflowsInput): Promise<GetWorkflowsOutput> {
-    let query = this.knexDB<{workflow_uuid: string}>(`${DBOSExecutor.systemDBSchemaName}.workflow_status`).orderBy('created_at', 'desc');
+    let query = this.knexDB<{ workflow_uuid: string }>(`${DBOSExecutor.systemDBSchemaName}.workflow_status`).orderBy("created_at", "desc");
     if (input.workflowName) {
-      query = query.where('name', input.workflowName);
+      query = query.where("name", input.workflowName);
     }
     if (input.authenticatedUser) {
-      query = query.where('authenticated_user', input.authenticatedUser);
+      query = query.where("authenticated_user", input.authenticatedUser);
     }
     if (input.startTime) {
-      query = query.where('created_at', '>=', new Date(input.startTime).getTime());
+      query = query.where("created_at", ">=", new Date(input.startTime).getTime());
     }
     if (input.endTime) {
-      query = query.where('created_at', '<=', new Date(input.endTime).getTime());
+      query = query.where("created_at", "<=", new Date(input.endTime).getTime());
     }
     if (input.status) {
-      query = query.where('status', input.status);
+      query = query.where("status", input.status);
     }
     if (input.applicationVersion) {
-      query = query.where('application_version', input.applicationVersion);
+      query = query.where("application_version", input.applicationVersion);
     }
     if (input.limit) {
       query = query.limit(input.limit);
     }
-    const rows = await query.select('workflow_uuid');
-    const workflowUUIDs = rows.map(row => row.workflow_uuid);
+    const rows = await query.select("workflow_uuid");
+    const workflowUUIDs = rows.map((row) => row.workflow_uuid);
     return {
-      workflowUUIDs: workflowUUIDs
+      workflowUUIDs: workflowUUIDs,
     };
   }
 
   async getWorkflowQueue(input: GetWorkflowQueueInput): Promise<GetWorkflowQueueOutput> {
-    let query = this.knexDB<workflow_queue>(`${DBOSExecutor.systemDBSchemaName}.workflow_queue`).orderBy('created_at_epoch_ms', 'desc');
+    let query = this.knexDB<workflow_queue>(`${DBOSExecutor.systemDBSchemaName}.workflow_queue`).orderBy("created_at_epoch_ms", "desc");
     if (input.queueName) {
-      query = query.where('queue_name', input.queueName);
+      query = query.where("queue_name", input.queueName);
     }
     if (input.startTime) {
-      query = query.where('created_at_epoch_ms', '>=', new Date(input.startTime).getTime());
+      query = query.where("created_at_epoch_ms", ">=", new Date(input.startTime).getTime());
     }
     if (input.endTime) {
-      query = query.where('created_at_at_epoch_ms', '<=', new Date(input.endTime).getTime());
+      query = query.where("created_at_at_epoch_ms", "<=", new Date(input.endTime).getTime());
     }
     if (input.limit) {
       query = query.limit(input.limit);
     }
     const rows = await query.select();
-    const workflows = rows.map((row) => { return {
-      workflowID: row.workflow_uuid,
-      queueName: row.queue_name,
-      createdAt: row.created_at_epoch_ms,
-      startedAt: row.started_at_epoch_ms,
-      completedAt: row.completed_at_epoch_ms,
-    }});
+    const workflows = rows.map((row) => {
+      return {
+        workflowID: row.workflow_uuid,
+        executorID: row.executor_id,
+        queueName: row.queue_name,
+        createdAt: row.created_at_epoch_ms,
+        startedAt: row.started_at_epoch_ms,
+        completedAt: row.completed_at_epoch_ms,
+      };
+    });
     return { workflows };
   }
 
   async enqueueWorkflow(workflowId: string, queue: WorkflowQueue): Promise<void> {
-    const _res = await this.pool.query<workflow_queue>(`
+    await this.pool.query<workflow_queue>(
+      `
       INSERT INTO ${DBOSExecutor.systemDBSchemaName}.workflow_queue (workflow_uuid, queue_name)
       VALUES ($1, $2)
       ON CONFLICT (workflow_uuid)
@@ -1000,31 +1004,47 @@ export class PostgresSystemDatabase implements SystemDatabase {
   }
 
   async reEnqueueWorkflow(workflowId: string, queue: WorkflowQueue): Promise<void> {
-    const _res = await this.pool.query<workflow_queue>(
+    const client: PoolClient = await this.pool.connect();
+    await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+    await client.query<workflow_queue>(
       `
-          UPDATE ${DBOSExecutor.systemDBSchemaName}.workflow_queue
-          SET started_at_epoch_ms = NULL, executor_id = NULL
-          WHERE workflow_uuid = $1;
-        `,
+      UPDATE ${DBOSExecutor.systemDBSchemaName}.workflow_queue
+      SET started_at_epoch_ms = NULL, executor_id = NULL
+      WHERE workflow_uuid = $1;
+    `,
       [workflowId]
     );
+    await client.query<workflow_status>(
+      `
+      UPDATE ${DBOSExecutor.systemDBSchemaName}.workflow_status
+      SET status = $2
+      WHERE workflow_uuid = $1;
+    `,
+      [workflowId, StatusString.ENQUEUED]
+    );
+    await client.query("COMMIT");
+    client.release();
   }
 
   async dequeueWorkflow(workflowId: string, queue: WorkflowQueue): Promise<void> {
     if (queue.rateLimit) {
       const time = new Date().getTime();
-      const _res = await this.pool.query<workflow_queue>(`
+      await this.pool.query<workflow_queue>(
+        `
         UPDATE ${DBOSExecutor.systemDBSchemaName}.workflow_queue
         SET completed_at_epoch_ms = $2
         WHERE workflow_uuid = $1;
-      `, [workflowId, time]);
-
-    }
-    else {
-      const _res = await this.pool.query<workflow_queue>(`
+      `,
+        [workflowId, time]
+      );
+    } else {
+      await this.pool.query<workflow_queue>(
+        `
         DELETE FROM ${DBOSExecutor.systemDBSchemaName}.workflow_queue
         WHERE workflow_uuid = $1;
-      `, [workflowId]);
+      `,
+        [workflowId]
+      );
     }
   }
 
