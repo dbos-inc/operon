@@ -45,7 +45,7 @@ export interface SystemDatabase {
   setWorkflowStatus(workflowUUID: string, status: typeof StatusString[keyof typeof StatusString], resetRecoveryAttempts: boolean): Promise<void>;
 
   enqueueWorkflow(workflowId: string, queue: WorkflowQueue): Promise<void>;
-  reEnqueueWorkflow(workflowId: string, queue: WorkflowQueue): Promise<void>;
+  reEnqueueWorkflow(workflowId: string): Promise<void>;
   dequeueWorkflow(workflowId: string, queue: WorkflowQueue): Promise<void>;
   findAndMarkStartableWorkflows(queue: WorkflowQueue, executorID: string): Promise<string[]>;
 
@@ -1003,7 +1003,7 @@ export class PostgresSystemDatabase implements SystemDatabase {
     );
   }
 
-  async reEnqueueWorkflow(workflowId: string, queue: WorkflowQueue): Promise<void> {
+  async reEnqueueWorkflow(workflowId: string): Promise<void> {
     const client: PoolClient = await this.pool.connect();
     await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
     await client.query<workflow_queue>(
