@@ -371,6 +371,55 @@ describe("queued-wf-tests-simple", () => {
     });
 });
 
+// Test that queued worfklows to recover are re-enqueued
+describe("queued-wf-tests-recovery", () => {
+    let config: DBOSConfig;
+
+    beforeAll(async () => {
+        config = generateDBOSTestConfig();
+        await setUpDBOSTestDb(config);
+        DBOS.setConfig(config);
+    });
+
+    beforeEach(async () => {
+        TestWFs.reset();
+        await DBOS.launch();
+    });
+
+    afterEach(async () => {
+        await DBOS.shutdown();
+    }, 10000);
+
+    test("queued-wf-recovery", async () => {
+        // Rate limit the queue so we have the time to perform our checks
+        const recoveryQueue = new WorkflowQueue("recoveryQ", { rateLimit: { limitPerPeriod: 1, periodSec: 100 } });
+        const wfid = uuidv4();
+        const wfh = await DBOS.startWorkflow(TestWFs, {
+            workflowID: wfid,
+            queueName: recoveryQueue.name,
+        }).sleepingWorkflow(10000);
+
+        // Wait for a couple queue polling interval and verify the workflow is being executed
+        await sleepms(2000);
+        expect((await wfh.getStatus())?.status).toBe(StatusString.PENDING);
+
+        // Trigger workflow recovery
+        await DBOS.recoverPendingWorkflows();
+
+        // Check the workflow is now enqueued (executor_id == null and created_at_epoch_ms == null)
+        const workflows = await DBOS.getWorkflowQueue({ queueName: recoveryQueue.name });
+        DBOS.logger.debug(workflows);
+        expect(workflows.workflows.length).toBe(1);
+        expect(workflows.workflows[0].workflowID).toBe(wfid);
+        expect(workflows.workflows[0].executorID).toBe(null);
+        expect(workflows.workflows[0].startedAt).toBe(null);
+
+        // Ensure it completes
+        expect(await wfh.getResult()).toBe(null);
+        expect((await wfh.getStatus())?.status).toBe(StatusString.SUCCESS);
+    }, 20000);
+});
+
 describe("queued-wf-tests-concurrent-workers", () => {
     let config: DBOSConfig;
 
@@ -476,6 +525,12 @@ class TestWFs
         expect (var1).toBe("abc");
         expect (var2).toBe("123");
         return Promise.resolve(new Date().getTime());
+    }
+
+    @DBOS.workflow()
+    static async sleepingWorkflow(time: number): Promise<void> {
+        await DBOS.sleepms(time);
+        return Promise.resolve();
     }
 
     @DBOS.workflow()
