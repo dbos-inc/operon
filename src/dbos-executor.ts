@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { Span } from "@opentelemetry/sdk-trace-base";
-import { DBOSError, DBOSInitializationError, DBOSWorkflowConflictUUIDError, DBOSNotRegisteredError, DBOSDebuggerError, DBOSConfigKeyTypeError, DBOSFailedSqlTransactionError, DBOSMaxStepRetriesError } from "./error";
+import { DBOSError, DBOSInitializationError, DBOSWorkflowConflictUUIDError, DBOSNotRegisteredError, DBOSDebuggerError, DBOSConfigKeyTypeError, DBOSFailedSqlTransactionError, DBOSMaxStepRetriesError, DBOSWorkflowRecoveryError  } from "./error";
 import {
   InvokedHandle,
   Workflow,
@@ -701,7 +701,7 @@ export class DBOSExecutor implements DBOSExecutorContext {
           }
           result = recordedResult;
         } else {
-          result = callResult!
+          result = callResult!;
         }
 
         function resultsMatch(recordedResult: Awaited<R>, callResult: Awaited<R>): boolean {
@@ -734,7 +734,7 @@ export class DBOSExecutor implements DBOSExecutorContext {
           // Record the error.
           const e = err as Error & { dbos_already_logged?: boolean };
           this.logger.error(e);
-          e.dbos_already_logged = true
+          e.dbos_already_logged = true;
           if (wCtxt.isTempWorkflow) {
             internalStatus.name = `${DBOSExecutor.tempWorkflowName}-${wCtxt.tempWfOperationType}-${wCtxt.tempWfOperationName}`;
           }
@@ -1026,7 +1026,7 @@ export class DBOSExecutor implements DBOSExecutorContext {
             cresult = await tf.call(clsinst, ...args);
           });
         }
-        const result = cresult!
+        const result = cresult!;
 
         // Record the execution, commit, and return.
         if (readOnly) {
@@ -1035,7 +1035,7 @@ export class DBOSExecutor implements DBOSExecutorContext {
             output: result,
             txn_snapshot: txn_snapshot,
             created_at: Date.now(),
-          }
+          };
           wfCtx.resultBuffer.set(funcId, readOutput);
         } else {
           try {
@@ -1201,7 +1201,7 @@ export class DBOSExecutor implements DBOSExecutorContext {
             cresult = await pf(...args);
           });
         }
-        const result = cresult!
+        const result = cresult!;
 
         if (readOnly) {
           // Buffer the output of read-only transactions instead of synchronously writing it.
@@ -1209,7 +1209,7 @@ export class DBOSExecutor implements DBOSExecutorContext {
             output: result,
             txn_snapshot: txn_snapshot,
             created_at: Date.now(),
-          }
+          };
           wfCtx.resultBuffer.set(funcId, readOutput);
         } else {
           // Synchronously record the output of write transactions and obtain the transaction ID.
@@ -1481,7 +1481,7 @@ export class DBOSExecutor implements DBOSExecutorContext {
             cresult = await sf.call(clsInst, ...args);
           });
         }
-        result = cresult!
+        result = cresult!;
       } catch (error) {
         err = error as Error;
       }
@@ -1593,9 +1593,27 @@ export class DBOSExecutor implements DBOSExecutorContext {
         this.logger.debug(`Skip local recovery because it's running in a VM: ${process.env.DBOS__VMID}`);
         continue;
       }
-      this.logger.debug(`Recovering workflows of executor: ${execID}`);
-      const wIDs = await this.systemDatabase.getPendingWorkflows(execID);
-      pendingWorkflows.push(...wIDs);
+      this.logger.debug(`Recovering workflows assigned to executor: ${execID}`);
+      const foundPendingWorkflows = await this.systemDatabase.getPendingWorkflows(execID);
+      // Re-enqueue workflows member of a queue
+      for (const pendingWorkflow of foundPendingWorkflows) {
+        this.logger.debug(`Recovering workflow: ${pendingWorkflow.workflowUUID}. Queue name: ${pendingWorkflow.queueName}`)
+        if (pendingWorkflow.queueName) {
+          try {
+            await this.systemDatabase.reEnqueueWorkflow(pendingWorkflow.workflowUUID);
+          } catch (e) {
+            // If this is a serialization failure, i.e., some other DBOS process is trying to re-enqueue or complete the workflow, skip it.
+            if (this.userDatabase.isRetriableTransactionError(e)) {
+              this.logger.warn(`Failed to re-enqueue workflow ${pendingWorkflow.workflowUUID}: ${(e as Error).message}`);
+              continue;
+            } else {
+              throw new DBOSWorkflowRecoveryError(pendingWorkflow.workflowUUID, (e as Error).message);
+            }
+          }
+        } else {
+          pendingWorkflows.push(pendingWorkflow.workflowUUID);
+        }
+      }
     }
 
     const handlerArray: WorkflowHandle<unknown>[] = [];
