@@ -21,7 +21,6 @@ import {
 } from "../src/debugpoint";
 import { DBOSConflictingWorkflowError } from "../src/error";
 
-
 const queue = new WorkflowQueue("testQ");
 const serialqueue = new WorkflowQueue("serialQ", 1);
 const serialqueueLimited = new WorkflowQueue("serialQL", { concurrency: 1, rateLimit: { limitPerPeriod: 10, periodSec: 1 } });
@@ -449,7 +448,7 @@ describe("queued-wf-tests-recovery", () => {
         expect((await wfh3.getStatus())?.status).toBe(StatusString.ENQUEUED);
 
         // Unblock the two first workflows
-        await TestWFs.blockedWorkflowResolve?.();
+        TestWFs.blockedWorkflowResolve?.();
         expect(await wfh1.getResult()).toBe(null);
         expect(await wfh2.getResult()).toBe(null);
         // Now the third workflow should have been dequeeud and complete
