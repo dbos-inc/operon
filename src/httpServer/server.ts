@@ -21,6 +21,7 @@ import * as net from "net";
 import { performance } from "perf_hooks";
 import { DBOSJSON, exhaustiveCheckGuard } from "../utils";
 import { runWithHandlerContext } from "../context";
+import { wfQueueRunner, QueueParameters } from "../wfqueue";
 
 export const WorkflowUUIDHeader = "dbos-idempotency-key";
 export const WorkflowRecoveryUrl = "/dbos-workflow-recovery";
@@ -28,6 +29,7 @@ export const HealthUrl = "/dbos-healthz";
 export const PerfUrl = "/dbos-perf";
 // FIXME this should be /dbos-deactivate to be consistent with other endpoints.
 export const DeactivateUrl = "/deactivate";
+export const WorkflowQueuesMetadataUrl = "/dbos-workflow-queues-metadata";
 
 export class DBOSHttpServer {
   readonly app: Koa;
@@ -68,6 +70,7 @@ export class DBOSHttpServer {
     DBOSHttpServer.registerCancelWorkflowEndpoint(dbosExec, adminRouter);
     DBOSHttpServer.registerResumeWorkflowEndpoint(dbosExec, adminRouter);
     DBOSHttpServer.registerRestartWorkflowEndpoint(dbosExec, adminRouter);
+    DBOSHttpServer.registerQueueMetadataEndpoint(dbosExec, adminRouter);
     adminApp.use(adminRouter.routes()).use(adminRouter.allowedMethods());
     return adminApp;
   }
@@ -153,6 +156,30 @@ export class DBOSHttpServer {
       router.get(HealthUrl, healthHandler);
       dbosExec.logger.debug(`DBOS Server Registered Healthz GET ${HealthUrl}`);
     }
+
+  /**
+   * Register workflow queue metadata endpoint.
+   */
+  static registerQueueMetadataEndpoint(dbosExec: DBOSExecutor, router: Router) {
+    const queueMetadataHandler = async (koaCtxt: Koa.Context, koaNext: Koa.Next) => {
+        type QueueMetadataResponse = QueueParameters & { name: string };
+        const queueDetailsArray: QueueMetadataResponse[] = [];
+        wfQueueRunner.wfQueuesByName.forEach((q, qn) => {
+            queueDetailsArray.push({
+                name: qn,
+                concurrency: q.concurrency,
+                workerConcurrency: q.workerConcurrency,
+                rateLimit: q.rateLimit,
+            });
+        });
+        koaCtxt.body = queueDetailsArray;
+
+        await koaNext();
+    };
+
+    router.get(WorkflowQueuesMetadataUrl, queueMetadataHandler);
+    dbosExec.logger.debug(`DBOS Server Registered Queue Metadata GET ${WorkflowQueuesMetadataUrl}`);
+  }
 
   /**
    * Register workflow recovery endpoint.
